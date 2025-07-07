@@ -32,6 +32,15 @@ endif
 SHELL = /usr/bin/env bash -o pipefail
 .SHELLFLAGS = -ec
 
+# Define a function to download a go tool if it is not installed.
+define go-get-tool
+@[ -f $(1) ] || { \
+set -e; \
+echo "Downloading $(2)" ;\
+go install $(2) ;\
+}
+endef
+
 .PHONY: all
 all: get snitch kubearmor-operator
 
@@ -137,7 +146,7 @@ generate: controller-gen ## Generate code containing DeepCopy, DeepCopyInto, and
 CONTROLLER_GEN = $(GOBIN)/controller-gen
 .PHONY: controller-gen
 controller-gen: ## Download controller-gen locally if necessary.
-	$(call go-get-tool,$(CONTROLLER_GEN),sigs.k8s.io/controller-tools/cmd/controller-gen@v0.4.1)
+	$(call go-get-tool,$(CONTROLLER_GEN),sigs.k8s.io/controller-tools/cmd/controller-gen@v0.16.5)
 
 client/gen:
 	@echo "--> Running code-generator to generate clients"

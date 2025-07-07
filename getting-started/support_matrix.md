@@ -16,11 +16,12 @@ KubeArmor supports following types of workloads:
 | Google     | [GKE] | Ubuntu >= 16.04 | x86_64 | :heavy_check_mark: | :heavy_check_mark: | :heavy_check_mark: | :heavy_check_mark: | [BPFLSM], AppArmor | All [release channels][GKE-REL] |
 | Microsoft  | [AKS] | Ubuntu >= 18.04 | x86_64 | :heavy_check_mark: | :heavy_check_mark: | :heavy_check_mark: | :heavy_check_mark: | [BPFLSM], AppArmor |
 | Oracle     | [OKE] | [UEK] >=7 | x86_64 | :heavy_check_mark: | :heavy_check_mark: | :heavy_check_mark: | :heavy_check_mark: | [BPFLSM] | [Oracle Linux Server 8.7][OLS] |
-| IBM        | [IBM k8s Service][IKS] | Ubuntu | x86_64 | :heavy_check_mark: | :heavy_check_mark: | :heavy_check_mark: | :heavy_check_mark: | [BPFLSM], AppArmor |
+| IBM        | [IKS] | Ubuntu | x86_64 | :heavy_check_mark: | :heavy_check_mark: | :heavy_check_mark: | :heavy_check_mark: | [BPFLSM], AppArmor |
+| Talos      | [Talos k8s][TalosK8s] | Talos | x86_64 | :heavy_check_mark: | :heavy_check_mark: | :heavy_check_mark: | :heavy_check_mark: | [BPFLSM] | [1540] |
 | AWS        | [EKS] | Amazon Linux 2 (kernel >=5.8) | x86_64 | :heavy_check_mark: | :heavy_check_mark: | :heavy_check_mark: | :heavy_check_mark: | [BPFLSM] |
-| AWS        | [EKS] | Amazon Linux 2 (kernel <=5.4) | x86_64 | :heavy_check_mark: | :heavy_check_mark: | :x: | :heavy_check_mark: | SELinux |
 | AWS        | [EKS] | Ubuntu | x86_64 | :heavy_check_mark: | :heavy_check_mark: | :heavy_check_mark: | :heavy_check_mark: | AppArmor |
 | AWS        | [EKS] | [Bottlerocket] | x86_64 | :heavy_check_mark: | :heavy_check_mark: | :heavy_check_mark: | :heavy_check_mark: | [BPFLSM] |
+| AWS        | [EKS-Auto-Mode] | [Bottlerocket] | x86_64 | :heavy_check_mark: | :heavy_check_mark: | :heavy_check_mark: | :heavy_check_mark: | [BPFLSM] |
 | AWS        | [Graviton] | Ubuntu | ARM | :heavy_check_mark: | :heavy_check_mark: | :heavy_check_mark: | :heavy_check_mark: | AppArmor |
 | AWS        | [Graviton] | Amazon Linux 2 | ARM | :heavy_check_mark: | :heavy_check_mark: | :x: | :heavy_check_mark: | SELinux |
 | RedHat     | [OpenShift] | [RHEL] <=8.4 | x86_64 | :heavy_check_mark: | :heavy_check_mark: | :x:  | :heavy_check_mark: | SELinux |
@@ -35,9 +36,12 @@ KubeArmor supports following types of workloads:
 | Alibaba Cloud | [Alibaba] | Alibaba Cloud Linux 3.2104 LTS | x86_64 | :heavy_check_mark: | :heavy_check_mark: | :heavy_check_mark: | :heavy_check_mark: | [BPFLSM] | [1650] |
 
 [Observability]: workload_visibility.md
+[TalosK8s]: https://www.siderolabs.com/platform/talos-os-for-kubernetes/
+[1540]: https://github.com/kubearmor/KubeArmor/issues/1540
 [Network-Segmentation]: network_segmentation.md
 [GKE]: https://cloud.google.com/kubernetes-engine
 [EKS]: https://aws.amazon.com/eks/
+[EKS-Auto-Mode]: https://aws.amazon.com/eks/auto-mode/
 [AKS]: https://azure.microsoft.com/
 [COS]: https://cloud.google.com/container-optimized-os/docs/concepts/features-and-benefits
 [GKE-REL]: https://cloud.google.com/kubernetes-engine/docs/concepts/release-channels

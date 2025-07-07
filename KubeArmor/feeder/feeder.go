@@ -534,25 +534,30 @@ func (fd *Feeder) PushLog(log tp.Log) {
 	   in case of enforcer = AppArmor only Default Posture logs will be converted to
 	   container/host log depending upon the defaultPostureLogs flag
 	*/
-	if (cfg.GlobalCfg.EnforcerAlerts && fd.Enforcer == "BPFLSM" && log.Enforcer != "BPFLSM") || (fd.Enforcer != "BPFLSM" && !cfg.GlobalCfg.DefaultPostureLogs) {
-		log = fd.UpdateMatchedPolicy(log)
-		if (log.Type == "MatchedPolicy" || log.Type == "MatchedHostPolicy") && ((fd.Enforcer == "BPFLSM" && (strings.Contains(log.PolicyName, "DefaultPosture") || !strings.Contains(log.Action, "Audit"))) || (fd.Enforcer != "BPFLSM" && strings.Contains(log.PolicyName, "DefaultPosture"))) {
-			if log.Type == "MatchedPolicy" {
-				log.Type = "ContainerLog"
-			} else if log.Type == "MatchedHostPolicy" {
-				log.Type = "HostLog"
+	if !common.IsPresetEnforcer(log.Enforcer) {
+		if (cfg.GlobalCfg.EnforcerAlerts && fd.Enforcer == "BPFLSM" && log.Enforcer == "") || (fd.Enforcer != "BPFLSM" && !cfg.GlobalCfg.DefaultPostureLogs) {
+			log = fd.UpdateMatchedPolicy(log)
+			if (log.Type == "MatchedPolicy" || log.Type == "MatchedHostPolicy") && ((fd.Enforcer == "BPFLSM" && (strings.Contains(log.PolicyName, "DefaultPosture") || !strings.Contains(log.Action, "Audit"))) || (fd.Enforcer != "BPFLSM" && strings.Contains(log.PolicyName, "DefaultPosture"))) {
+				if log.Type == "MatchedPolicy" {
+					log.Type = "ContainerLog"
+				} else if log.Type == "MatchedHostPolicy" {
+					log.Type = "HostLog"
+				}
 			}
-		}
-	} else {
-		log = fd.UpdateMatchedPolicy(log)
-		if fd.Enforcer == "BPFLSM" {
-			log.Enforcer = "BPFLSM"
+		} else {
+			log = fd.UpdateMatchedPolicy(log)
+			if fd.Enforcer == "BPFLSM" {
+				log.Enforcer = "BPFLSM"
+			}
 		}
 	}
 
 	if log.Source == "" {
 		// even if a log doesn't have a source, it must have a type
 		if log.Type == "" {
+			if strings.Contains(log.Enforcer, "PRESET") {
+				kg.Printf("no source and type: %s\n", log.Enforcer)
+			}
 			return
 		}
 		fd.Debug("Pushing Telemetry without source")
@@ -594,6 +599,8 @@ func (fd *Feeder) PushLog(log tp.Log) {
 			}
 		}
 		pbAlert := pb.Alert{}
+
+		pbAlert.KubeArmorVersion = log.KubeArmorVersion
 
 		pbAlert.Timestamp = log.Timestamp
 		pbAlert.UpdatedTime = log.UpdatedTime
@@ -641,7 +648,7 @@ func (fd *Feeder) PushLog(log tp.Log) {
 			pbAlert.PolicyName = log.PolicyName
 		}
 
-		if len(log.Severity) > 0 {
+		if len(log.Severity) > 0 && log.Severity != "0" {
 			pbAlert.Severity = log.Severity
 		}
 
@@ -660,6 +667,11 @@ func (fd *Feeder) PushLog(log tp.Log) {
 		pbAlert.Operation = log.Operation
 		pbAlert.Resource = strings.ToValidUTF8(log.Resource, "")
 		pbAlert.Cwd = log.Cwd
+
+		pbAlert.ExecEvent = &pb.ExecEvent{
+			ExecID:         log.ExecEvent.ExecID,
+			ExecutableName: log.ExecEvent.ExecutableName,
+		}
 
 		if len(log.Data) > 0 {
 			pbAlert.Data = log.Data
@@ -737,6 +749,11 @@ func (fd *Feeder) PushLog(log tp.Log) {
 		pbLog.Operation = log.Operation
 		pbLog.Resource = strings.ToValidUTF8(log.Resource, "")
 		pbLog.Cwd = log.Cwd
+
+		pbLog.ExecEvent = &pb.ExecEvent{
+			ExecID:         log.ExecEvent.ExecID,
+			ExecutableName: log.ExecEvent.ExecutableName,
+		}
 
 		if len(log.Data) > 0 {
 			pbLog.Data = log.Data

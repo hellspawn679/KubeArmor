@@ -27,6 +27,7 @@ import (
 	. "github.com/onsi/gomega"
 	log "github.com/sirupsen/logrus"
 	"google.golang.org/grpc"
+	"google.golang.org/grpc/credentials/insecure"
 	"google.golang.org/protobuf/types/known/emptypb"
 	appsV1 "k8s.io/api/apps/v1"
 	corev1 "k8s.io/api/core/v1"
@@ -679,7 +680,7 @@ func AssertCommand(wp string, namespace string, cmd []string, match gomegaTypes.
 // SendPolicy sends kubearmor policy using grpc client
 func SendPolicy(eventType, path string) error {
 	var policyOptions kclient.PolicyOptions
-	err := kclient.PolicyHandling(eventType, path, policyOptions, "", false)
+	err := kclient.PolicyHandling(eventType, path, policyOptions)
 
 	return err
 }
@@ -694,7 +695,7 @@ func ContainerInfo() (*pb.ProbeResponse, error) {
 		gRPC = "localhost:32767"
 	}
 
-	conn, err := grpc.Dial(gRPC, grpc.WithInsecure())
+	conn, err := grpc.NewClient(gRPC, grpc.DialOption(grpc.WithTransportCredentials(insecure.NewCredentials())))
 	if err != nil {
 		return nil, err
 	}

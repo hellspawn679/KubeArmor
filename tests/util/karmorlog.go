@@ -93,7 +93,6 @@ func KarmorGetTargetLogs(timeout time.Duration, target *pb.Log) (EventResult, er
 }
 
 func getAlertWithInfo(alert *pb.Alert, target *pb.Alert) bool {
-
 	if target.PolicyName != "" {
 		if alert.PolicyName != target.PolicyName {
 			return false
@@ -124,6 +123,11 @@ func getAlertWithInfo(alert *pb.Alert, target *pb.Alert) bool {
 			return false
 		}
 	}
+	if target.Source != "" {
+		if !strings.Contains(alert.Source, target.Source) {
+			return false
+		}
+	}
 	if target.NamespaceName != "" {
 		if alert.NamespaceName != target.NamespaceName {
 			return false
@@ -131,6 +135,11 @@ func getAlertWithInfo(alert *pb.Alert, target *pb.Alert) bool {
 	}
 	if target.Data != "" {
 		if !strings.Contains(alert.Data, target.Data) {
+			return false
+		}
+	}
+	if target.ContainerName != "" {
+		if !strings.Contains(alert.ContainerName, target.ContainerName) {
 			return false
 		}
 	}

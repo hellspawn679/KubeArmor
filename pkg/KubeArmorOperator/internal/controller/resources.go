@@ -9,6 +9,7 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"reflect"
 	"regexp"
 	"strconv"
 	"strings"
@@ -26,15 +27,16 @@ import (
 	extv1 "k8s.io/apiextensions-apiserver/pkg/apis/apiextensions/v1"
 	metav1errors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/apimachinery/pkg/util/intstr"
 )
 
-func generateDaemonset(name, enforcer, runtime, socket, btfPresent, apparmorfs, seccompPresent string, initDeploy bool) *appsv1.DaemonSet {
+func generateDaemonset(name, enforcer, runtime, socket, nriSocket, btfPresent, apparmorfs, seccompPresent string, initDeploy bool) *appsv1.DaemonSet {
 	enforcerVolumes := []corev1.Volume{}
 	enforcerVolumeMounts := []corev1.VolumeMount{}
 	if !(enforcer == "apparmor" && apparmorfs == "no") {
 		enforcerVolumes, enforcerVolumeMounts = genEnforcerVolumes(enforcer)
 	}
-	runtimeVolumes, runtimeVolumeMounts := genRuntimeVolumes(runtime, socket)
+	runtimeVolumes, runtimeVolumeMounts := genRuntimeVolumes(runtime, socket, nriSocket)
 	vols := []corev1.Volume{}
 	volMnts := []corev1.VolumeMount{}
 	vols = append(vols, enforcerVolumes...)
@@ -59,6 +61,16 @@ func generateDaemonset(name, enforcer, runtime, socket, btfPresent, apparmorfs, 
 	if btfPresent != "no" && !initDeploy {
 		daemonset.Spec.Template.Spec.InitContainers = []corev1.Container{}
 	}
+
+	if nriSocket != "" && common.NRIEnabled {
+		name = strings.Join([]string{
+			"kubearmor",
+			strings.ReplaceAll(enforcer, ".", "-"),
+			"nri",
+			common.ShortSHA(nriSocket),
+		}, "-")
+	}
+
 	daemonset.Name = name
 	labels := map[string]string{
 		common.EnforcerLabel: enforcer,
@@ -67,6 +79,9 @@ func generateDaemonset(name, enforcer, runtime, socket, btfPresent, apparmorfs, 
 		common.OsLabel:       "linux",
 		common.BTFLabel:      btfPresent,
 		common.SeccompLabel:  seccompPresent,
+	}
+	if nriSocket != "" {
+		labels[common.NRISocketLabel] = nriSocket
 	}
 	daemonset.Spec.Template.Spec.NodeSelector = common.CopyStrMap(labels)
 	labels["kubearmor-app"] = "kubearmor"
@@ -85,6 +100,17 @@ func generateDaemonset(name, enforcer, runtime, socket, btfPresent, apparmorfs, 
 			},
 		}
 	}
+
+	// TODO: handle passing annotateResource flag to kubearmor
+	// ideally this configuration should be part of kubearmoconfig to avoid hardcoding version checks
+	// to detect flag compatibility
+
+	// if annotateResource {
+	// 	common.AddOrReplaceArg("-annotateResource=true", "-annotateResource=false", &daemonset.Spec.Template.Spec.Containers[0].Args)
+	// } else {
+	// 	common.AddOrReplaceArg("-annotateResource=false", "-annotateResource=true", &daemonset.Spec.Template.Spec.Containers[0].Args)
+	// }
+
 	if common.EnableTls {
 		vols = append(vols, common.KubeArmorCaVolume...)
 		volMnts = append(volMnts, common.KubeArmorCaVolumeMount...)
@@ -99,6 +125,9 @@ func generateDaemonset(name, enforcer, runtime, socket, btfPresent, apparmorfs, 
 		daemonset.Spec.Template.Spec.InitContainers[0].VolumeMounts = commonVolMnts
 		daemonset.Spec.Template.Spec.InitContainers[0].Image = common.GetApplicationImage(common.KubeArmorInitName)
 		daemonset.Spec.Template.Spec.InitContainers[0].ImagePullPolicy = corev1.PullPolicy(common.KubeArmorInitImagePullPolicy)
+		UpdateArgsIfDefinedAndUpdated(&daemonset.Spec.Template.Spec.InitContainers[0].Args, common.KubeArmorInitArgs)
+		UpdateImagePullSecretsIfDefinedAndUpdated(&daemonset.Spec.Template.Spec.ImagePullSecrets, common.KubeArmorInitImagePullSecrets)
+		UpdateTolerationsIfDefinedAndUpdated(&daemonset.Spec.Template.Spec.Tolerations, common.KubeArmorInitTolerations)
 	}
 	// update images
 	if seccompPresent == "yes" && common.ConfigDefaultSeccompEnabled == "true" {
@@ -117,6 +146,15 @@ func generateDaemonset(name, enforcer, runtime, socket, btfPresent, apparmorfs, 
 
 	daemonset.Spec.Template.Spec.Containers[0].Image = common.GetApplicationImage(common.KubeArmorName)
 	daemonset.Spec.Template.Spec.Containers[0].ImagePullPolicy = corev1.PullPolicy(common.KubeArmorImagePullPolicy)
+	UpdateArgsIfDefinedAndUpdated(&daemonset.Spec.Template.Spec.Containers[0].Args, common.KubeArmorArgs)
+	UpdateImagePullSecretsIfDefinedAndUpdated(&daemonset.Spec.Template.Spec.ImagePullSecrets, common.KubeArmorImagePullSecrets)
+	UpdateTolerationsIfDefinedAndUpdated(&daemonset.Spec.Template.Spec.Tolerations, common.KubeArmorInitTolerations)
+	if len(daemonset.Spec.Template.Spec.ImagePullSecrets) < 1 {
+		updateImagePullSecretFromGlobal(common.GlobalImagePullSecrets, &daemonset.Spec.Template.Spec.ImagePullSecrets)
+	}
+	if len(daemonset.Spec.Template.Spec.Tolerations) < 1 {
+		updateTolerationFromGlobal(common.GlobalTolerations, &daemonset.Spec.Template.Spec.Tolerations)
+	}
 	daemonset = addOwnership(daemonset).(*appsv1.DaemonSet)
 	fmt.Printf("generated daemonset: %v", daemonset)
 	return daemonset
@@ -133,7 +171,7 @@ func genEnforcerVolumes(enforcer string) (vol []corev1.Volume, volMnt []corev1.V
 	return
 }
 
-func genRuntimeVolumes(runtime, runtimeSocket string) (vol []corev1.Volume, volMnt []corev1.VolumeMount) {
+func genRuntimeVolumes(runtime, runtimeSocket, nriSocket string) (vol []corev1.Volume, volMnt []corev1.VolumeMount) {
 	// lookup socket
 	for _, socket := range common.ContainerRuntimeSocketMap[runtime] {
 		if strings.ReplaceAll(socket[1:], "/", "_") == runtimeSocket {
@@ -154,6 +192,30 @@ func genRuntimeVolumes(runtime, runtimeSocket string) (vol []corev1.Volume, volM
 				ReadOnly:  true,
 			})
 			break
+		}
+	}
+	if nriSocket != "" && common.NRIEnabled {
+		runtime = "nri"
+		for _, socket := range common.ContainerRuntimeSocketMap[runtime] {
+			if strings.ReplaceAll(socket[1:], "/", "_") == nriSocket {
+				vol = append(vol, corev1.Volume{
+					Name: runtime + "-socket",
+					VolumeSource: corev1.VolumeSource{
+						HostPath: &corev1.HostPathVolumeSource{
+							Path: socket,
+							Type: &common.HostPathSocket,
+						},
+					},
+				})
+
+				socket = common.RuntimeSocketLocation[runtime]
+				volMnt = append(volMnt, corev1.VolumeMount{
+					Name:      runtime + "-socket",
+					MountPath: socket,
+					ReadOnly:  true,
+				})
+				break
+			}
 		}
 	}
 	return
@@ -310,7 +372,7 @@ func deploySnitch(nodename string, runtime string) *batchv1.Job {
 						VolumeSource: corev1.VolumeSource{
 							HostPath: &corev1.HostPathVolumeSource{
 								Path: "/etc/apparmor.d/",
-								Type: &common.HostPathDirectoryOrCreate,
+								Type: &common.HostPathDirectory,
 							},
 						},
 					},
@@ -442,6 +504,12 @@ func (clusterWatcher *ClusterWatcher) AreAllNodesProcessed() bool {
 
 func (clusterWatcher *ClusterWatcher) deployControllerDeployment(deployment *appsv1.Deployment) error {
 	deployment = addOwnership(deployment).(*appsv1.Deployment)
+
+	// add port to controller deployment
+	common.ControllerPortLock.Lock()
+	deployment.Spec.Template.Spec.Containers[0].Ports[0].ContainerPort = int32(common.KubeArmorControllerPort)
+	UpdateArgsIfDefinedAndUpdated(&deployment.Spec.Template.Spec.Containers[0].Args, []string{"webhook-port=" + strconv.Itoa(common.KubeArmorControllerPort)})
+	common.ControllerPortLock.Unlock()
 	if common.IfNodeWithSecurtiyFs {
 		deployment.Spec.Template.Spec.NodeSelector = map[string]string{
 			common.SecurityFsLabel: "yes",
@@ -459,10 +527,11 @@ func (clusterWatcher *ClusterWatcher) deployControllerDeployment(deployment *app
 		}
 	} else {
 		if (common.IfNodeWithSecurtiyFs && controller.Spec.Template.Spec.NodeSelector == nil) ||
-			(!common.IfNodeWithSecurtiyFs && controller.Spec.Template.Spec.NodeSelector != nil) {
+			(!common.IfNodeWithSecurtiyFs && controller.Spec.Template.Spec.NodeSelector != nil) || !reflect.DeepEqual(controller.Spec.Template.Spec.Containers[0].Args, deployment.Spec.Template.Spec.Containers[0].Args) {
 			clusterWatcher.Log.Infof("Updating deployment %s", controller.Name)
 			controller.Spec.Template.Spec.NodeSelector = deployment.Spec.Template.Spec.NodeSelector
 			controller.Spec.Template.Spec.Containers = deployment.Spec.Template.Spec.Containers
+			clusterWatcher.Log.Infoln("updated deployment", controller)
 			_, err = clusterWatcher.Client.AppsV1().Deployments(common.Namespace).Update(context.Background(), controller, metav1.UpdateOptions{})
 			if err != nil {
 				clusterWatcher.Log.Warnf("Cannot update deployment %s, error=%s", deployment.Name, err.Error())
@@ -639,10 +708,37 @@ func (clusterWatcher *ClusterWatcher) WatchRequiredResources() {
 	}
 	clusterRoles := []*rbacv1.ClusterRole{
 		addOwnership(genSnitchRole()).(*rbacv1.ClusterRole),
-		addOwnership(deployments.GetClusterRole()).(*rbacv1.ClusterRole),
 		addOwnership(deployments.GetRelayClusterRole()).(*rbacv1.ClusterRole),
-		addOwnership(deployments.GetKubeArmorControllerClusterRole()).(*rbacv1.ClusterRole),
 	}
+	controllerClusterRole := addOwnership(deployments.GetKubeArmorControllerClusterRole()).(*rbacv1.ClusterRole)
+	if annotateExisting {
+		controllerClusterRole.Rules = append(controllerClusterRole.Rules, []rbacv1.PolicyRule{
+			{
+				APIGroups: []string{"apps"},
+				Resources: []string{"deployments", "statefulsets", "daemonsets", "replicasets"},
+				Verbs:     []string{"get", "update"},
+			},
+		}...)
+	}
+	clusterRoles = append(clusterRoles, controllerClusterRole)
+
+	kaClusterRole := addOwnership(deployments.GetClusterRole()).(*rbacv1.ClusterRole)
+	if annotateResource {
+		kaClusterRole.Rules = append(kaClusterRole.Rules, []rbacv1.PolicyRule{
+			{
+				APIGroups: []string{"apps"},
+				Resources: []string{"deployments", "replicasets", "daemonsets", "statefulsets"},
+				Verbs:     []string{"patch", "update"},
+			},
+			{
+				APIGroups: []string{"batch"},
+				Resources: []string{"jobs", "cronjobs"},
+				Verbs:     []string{"patch", "update"},
+			},
+		}...)
+	}
+	clusterRoles = append(clusterRoles, kaClusterRole)
+
 	clusterRoleBindings := []*rbacv1.ClusterRoleBinding{
 		addOwnership(deployments.GetClusterRoleBinding(common.Namespace)).(*rbacv1.ClusterRoleBinding),
 		addOwnership(deployments.GetRelayClusterRoleBinding(common.Namespace)).(*rbacv1.ClusterRoleBinding),
@@ -656,8 +752,11 @@ func (clusterWatcher *ClusterWatcher) WatchRequiredResources() {
 		addOwnership(deployments.GetKubeArmorControllerLeaderElectionRoleBinding(common.Namespace)).(*rbacv1.RoleBinding),
 	}
 
+	kubearmorControllerWebhookSvc := deployments.GetKubeArmorControllerWebhookService(common.Namespace)
+	kubearmorControllerWebhookSvc.Spec.Ports[0].TargetPort = intstr.FromInt(int(common.KubeArmorControllerPort))
 	svcs := []*corev1.Service{
-		addOwnership(deployments.GetKubeArmorControllerWebhookService(common.Namespace)).(*corev1.Service),
+
+		addOwnership(kubearmorControllerWebhookSvc).(*corev1.Service),
 		addOwnership(deployments.GetRelayService(common.Namespace)).(*corev1.Service),
 	}
 	// Install CRDs
@@ -687,7 +786,33 @@ func (clusterWatcher *ClusterWatcher) WatchRequiredResources() {
 	}
 	// kubearmor-controller and relay-server deployments
 	controller := deployments.GetKubeArmorControllerDeployment(common.Namespace)
+
 	relayServer := deployments.GetRelayDeployment(common.Namespace)
+	// update args, imagePullSecrets and tolerations
+	UpdateArgsIfDefinedAndUpdated(&controller.Spec.Template.Spec.Containers[0].Args, common.KubeArmorControllerArgs)
+
+	// add annotateExisting flag to controller args
+	if annotateExisting {
+		UpdateArgsIfDefinedAndUpdated(&controller.Spec.Template.Spec.Containers[0].Args, []string{"annotateExisting=true"})
+	}
+
+	UpdateImagePullSecretsIfDefinedAndUpdated(&controller.Spec.Template.Spec.ImagePullSecrets, common.KubeArmorControllerImagePullSecrets)
+	UpdateTolerationsIfDefinedAndUpdated(&controller.Spec.Template.Spec.Tolerations, common.KubeArmorControllerTolerations)
+	if len(controller.Spec.Template.Spec.ImagePullSecrets) < 1 {
+		updateImagePullSecretFromGlobal(common.GlobalImagePullSecrets, &controller.Spec.Template.Spec.ImagePullSecrets)
+	}
+	if len(controller.Spec.Template.Spec.Tolerations) < 1 {
+		updateTolerationFromGlobal(common.GlobalTolerations, &controller.Spec.Template.Spec.Tolerations)
+	}
+	UpdateArgsIfDefinedAndUpdated(&relayServer.Spec.Template.Spec.Containers[0].Args, common.KubeArmorRelayArgs)
+	UpdateImagePullSecretsIfDefinedAndUpdated(&relayServer.Spec.Template.Spec.ImagePullSecrets, common.KubeArmorControllerImagePullSecrets)
+	UpdateTolerationsIfDefinedAndUpdated(&relayServer.Spec.Template.Spec.Tolerations, common.KubeArmorControllerTolerations)
+	if len(relayServer.Spec.Template.Spec.ImagePullSecrets) < 1 {
+		updateImagePullSecretFromGlobal(common.GlobalImagePullSecrets, &relayServer.Spec.Template.Spec.ImagePullSecrets)
+	}
+	if len(relayServer.Spec.Template.Spec.Tolerations) < 1 {
+		updateTolerationFromGlobal(common.GlobalTolerations, &relayServer.Spec.Template.Spec.Tolerations)
+	}
 	// update relay env vars
 	relayServer.Spec.Template.Spec.Containers[0].Env = []corev1.EnvVar{
 		{
@@ -869,13 +994,21 @@ func (clusterWatcher *ClusterWatcher) WatchRequiredResources() {
 		}
 
 		for _, clusterRole := range clusterRoles {
-			_, err = clusterWatcher.Client.RbacV1().ClusterRoles().Get(context.Background(), clusterRole.Name, metav1.GetOptions{})
+			role, err := clusterWatcher.Client.RbacV1().ClusterRoles().Get(context.Background(), clusterRole.Name, metav1.GetOptions{})
 			if isNotfound(err) {
 				clusterWatcher.Log.Infof("Creating cluster role %s", clusterRole.Name)
 				_, err := clusterWatcher.Client.RbacV1().ClusterRoles().Create(context.Background(), clusterRole, metav1.CreateOptions{})
 				if err != nil {
 					installErr = err
 					clusterWatcher.Log.Warnf("Cannot create cluster role %s, error=%s", clusterRole.Name, err.Error())
+				}
+			} else if err == nil && !reflect.DeepEqual(role.Rules, clusterRole.Rules) {
+				// update clusterroles if there's a change in rules
+				clusterWatcher.Log.Infof("Updating cluster role %s", clusterRole.Name)
+				_, err := clusterWatcher.Client.RbacV1().ClusterRoles().Update(context.Background(), clusterRole, metav1.UpdateOptions{})
+				if err != nil {
+					installErr = err
+					clusterWatcher.Log.Warnf("Cannot update cluster role %s, error=%s", clusterRole.Name, err.Error())
 				}
 			}
 		}

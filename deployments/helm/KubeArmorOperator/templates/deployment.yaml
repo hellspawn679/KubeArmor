@@ -24,6 +24,14 @@ spec:
       {{- with .Values.kubearmorOperator.podSecurityContext }}
       securityContext:
             {{- toYaml . | nindent 8 }}
+      {{- end }}      
+      {{- if .Values.kubearmorOperator.image.imagePullSecrets }}
+      imagePullSecrets:
+      {{ toYaml .Values.kubearmorOperator.image.imagePullSecrets | indent 6 }}
+      {{- end }}
+      {{- if .Values.kubearmorOperator.tolerations }}
+      tolerations:
+      {{ toYaml .Values.kubearmorOperator.tolerations | indent 6 }}
       {{- end }}
       containers:
       - name: {{ .Values.kubearmorOperator.name }}
@@ -37,14 +45,11 @@ spec:
         {{- end }}
         image: {{ include "operatorImage" . }}
         imagePullPolicy: {{ .Values.kubearmorOperator.imagePullPolicy }}
-        
-        {{- $tag := (split ":" (include "operatorImage" .))._1 -}}
-        {{- if or (eq $tag "latest") (and (hasPrefix "v" $tag) (semverCompare "^1.4.0" $tag)) }}
-        # initDeploy flag is only supported from v1.4.0
         args:
+        - --annotateExisting={{ .Values.kubearmorOperator.annotateExisting }}
+        - --annotateResource={{ .Values.kubearmorOperator.annotateResource }}
         {{- if .Values.kubearmorOperator.args -}}
-        {{- toYaml .Values.kubearmorOperator.args | trim | nindent 8 }}
-        {{- end }}
+          {{- toYaml .Values.kubearmorOperator.args | trim | nindent 8 }}
         {{- end }}
         {{- with .Values.kubearmorOperator.securityContext }}
         securityContext:
@@ -54,6 +59,5 @@ spec:
         resources:
           {{- toYaml . | nindent 10 }}
         {{- end }}
-
       serviceAccountName: {{ .Values.kubearmorOperator.name }}
   

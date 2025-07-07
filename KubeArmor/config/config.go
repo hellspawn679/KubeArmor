@@ -27,6 +27,9 @@ type KubearmorConfig struct {
 	LogPath           string // Log file to use
 	SELinuxProfileDir string // Directory to store SELinux profiles
 	CRISocket         string // Container runtime to use
+	NRISocket         string // NRI socket to use
+	NRIIndex          string // NRI socket to use
+	NRIEnabled        bool   // enable NRI
 
 	Visibility     string // Container visibility to use
 	HostVisibility string // Host visibility to use
@@ -82,6 +85,9 @@ const (
 	ConfigLogPath                        string = "logPath"
 	ConfigSELinuxProfileDir              string = "seLinuxProfileDir"
 	ConfigCRISocket                      string = "criSocket"
+	ConfigNRISocket                      string = "nriSocket"
+	ConfigNRIIndex                       string = "nriIndex"
+	ConfigNRI                            string = "enableNRI"
 	ConfigVisibility                     string = "visibility"
 	ConfigHostVisibility                 string = "hostVisibility"
 	ConfigKubearmorPolicy                string = "enableKubeArmorPolicy"
@@ -122,6 +128,9 @@ func readCmdLineParams() {
 	logStr := flag.String(ConfigLogPath, "none", "log file path, {path|stdout|none}")
 	seLinuxProfileDirStr := flag.String(ConfigSELinuxProfileDir, "/tmp/kubearmor.selinux", "SELinux profile directory")
 	criSocket := flag.String(ConfigCRISocket, "", "path to CRI socket (format: unix:///path/to/file.sock)")
+	nriSocket := flag.String(ConfigNRISocket, "", "path to NRI socket (format: /path/to/file.sock)")
+	nriIndex := flag.String(ConfigNRIIndex, "99", "NRI plugin index")
+	nriEnabled := flag.Bool(ConfigNRI, false, "enable NRI to get events from it")
 
 	visStr := flag.String(ConfigVisibility, "process,file,network,capabilities", "Container Visibility to use [process,file,network,capabilities,none]")
 	hostVisStr := flag.String(ConfigHostVisibility, "default", "Host Visibility to use [process,file,network,capabilities,none] (default \"none\" for k8s, \"process,file,network,capabilities\" for VM)")
@@ -185,6 +194,9 @@ func readCmdLineParams() {
 	viper.SetDefault(ConfigLogPath, *logStr)
 	viper.SetDefault(ConfigSELinuxProfileDir, *seLinuxProfileDirStr)
 	viper.SetDefault(ConfigCRISocket, *criSocket)
+	viper.SetDefault(ConfigNRISocket, *nriSocket)
+	viper.SetDefault(ConfigNRIIndex, *nriIndex)
+	viper.SetDefault(ConfigNRI, *nriEnabled)
 
 	viper.SetDefault(ConfigVisibility, *visStr)
 	viper.SetDefault(ConfigHostVisibility, *hostVisStr)
@@ -277,6 +289,13 @@ func LoadConfig() error {
 	if GlobalCfg.CRISocket != "" && !strings.HasPrefix(GlobalCfg.CRISocket, "unix://") {
 		return fmt.Errorf("CRI socket must start with 'unix://' (%s is invalid)", GlobalCfg.CRISocket)
 	}
+
+	GlobalCfg.NRISocket = os.Getenv("NRI_SOCKET")
+	if GlobalCfg.NRISocket == "" {
+		GlobalCfg.NRISocket = viper.GetString(ConfigNRISocket)
+	}
+	GlobalCfg.NRIIndex = viper.GetString(ConfigNRIIndex)
+	GlobalCfg.NRIEnabled = viper.GetBool(ConfigNRI)
 
 	GlobalCfg.Policy = viper.GetBool(ConfigKubearmorPolicy)
 	GlobalCfg.HostPolicy = viper.GetBool(ConfigKubearmorHostPolicy)

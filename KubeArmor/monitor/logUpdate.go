@@ -82,10 +82,10 @@ func (mon *SystemMonitor) BuildLogBase(eventID int32, msg ContextCombined, readl
 		log.UID = int32(msg.ContextSys.UID)
 
 		log.ProcessName = mon.GetExecPath(msg.ContainerID, msg.ContextSys, readlink)
-		log.ParentProcessName = mon.GetParentExecPath(msg.ContainerID, msg.ContextSys, readlink)
+		log.ParentProcessName = mon.GetParentExecPath(msg.ContainerID, msg.ContextSys, readlink, false)
 
 		if msg.ContextSys.EventID == SysExecve || msg.ContextSys.EventID == SysExecveAt {
-			log.Source = mon.GetParentExecPath(msg.ContainerID, msg.ContextSys, readlink)
+			log.Source = mon.GetParentExecPath(msg.ContainerID, msg.ContextSys, readlink, false)
 		} else {
 			log.Source = mon.GetCommand(msg.ContainerID, msg.ContextSys, readlink)
 		}
@@ -110,7 +110,7 @@ func (mon *SystemMonitor) UpdateLogBase(ctx SyscallContext, log tp.Log) tp.Log {
 		log.ProcessName = processName
 	}
 
-	parentProcessName := mon.GetParentExecPath(log.ContainerID, ctx, true)
+	parentProcessName := mon.GetParentExecPath(log.ContainerID, ctx, true, false)
 	if parentProcessName != "" {
 		log.ParentProcessName = parentProcessName
 		log.Source = parentProcessName
@@ -514,6 +514,34 @@ func (mon *SystemMonitor) UpdateLogs() {
 				log.Resource = ""
 				log.Data = "syscall=" + GetSyscallName(int32(msg.ContextSys.EventID)) + " fd=" + fd
 
+			case UDPSendMsg:
+				if len(msg.ContextArgs) != 3 {
+					continue
+				}
+				domains := ""
+				if val, ok := msg.ContextArgs[1].(string); ok {
+					domains = val
+				}
+				var sockAddr map[string]string
+				if val, ok := msg.ContextArgs[0].(map[string]string); ok {
+					sockAddr = val
+				}
+				qtype := ""
+				if val, ok := msg.ContextArgs[2].(uint16); ok {
+					if val == 1 {
+						qtype = "A"
+					}
+					if val == 28 {
+						qtype = "AAAA"
+					}
+				}
+
+				log.Data = "kfunc=UDP_SENDMSG," + "domain=" + domains[:len(domains)-1] + // removed trailing . from domain name
+					",daddr=" + sockAddr["sin_addr"] +
+					",qtype=" + qtype
+				log.Operation = "Network"
+				log.Resource = "sa_family=" + sockAddr["sa_family"] + " sin_port=53"
+
 			case DropAlert: // throttling alert
 				log.Operation = "AlertThreshold"
 				log.Type = "SystemEvent"
@@ -524,9 +552,35 @@ func (mon *SystemMonitor) UpdateLogs() {
 				continue
 			}
 
-			// fallback logic: in case we get relative path in log.Resource then we join cwd + resource to get pull path
-			if !strings.HasPrefix(strings.Split(log.Resource, " ")[0], "/") && log.Cwd != "/" {
-				log.Resource = filepath.Join(log.Cwd, log.Resource)
+			if log.ProcessName == "" {
+				switch log.Operation {
+				case "Process":
+					if log.Resource != "" {
+						if res := strings.Split(log.Resource, " "); len(res) > 0 {
+							log.ProcessName = res[0]
+						}
+					} else {
+						mon.Logger.Debug("Dropping Process Event with empty processName and Resource")
+						continue
+					}
+				case "Network", "File":
+					if log.Source != "" {
+						if src := strings.Split(log.Source, " "); len(src) > 0 {
+							log.ProcessName = src[0]
+						}
+					} else {
+						mon.Logger.Debugf("Dropping %s Event with empty processName and Source", log.Operation)
+						continue
+					}
+				}
+			}
+
+			// fallback logic: in case we get relative path in log.Resource for file and process event
+			// then we join cwd + resource to get pull path
+			if log.Operation == "Process" || log.Operation == "File" {
+				if !strings.HasPrefix(strings.Split(log.Resource, " ")[0], "/") && log.Cwd != "/" {
+					log.Resource = filepath.Join(log.Cwd, log.Resource)
+				}
 			}
 
 			// get error message
@@ -539,6 +593,12 @@ func (mon *SystemMonitor) UpdateLogs() {
 				}
 			} else {
 				log.Result = "Passed"
+			}
+
+			// exec event
+			log.ExecEvent.ExecID = strconv.FormatUint(msg.ContextSys.ExecID, 10)
+			if comm := strings.TrimRight(string(msg.ContextSys.Comm[:]), "\x00"); len(comm) > 0 {
+				log.ExecEvent.ExecutableName = comm
 			}
 
 			// push the generated log

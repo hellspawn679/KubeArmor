@@ -29,6 +29,7 @@ helm upgrade --install kubearmor-operator . -n kubearmor --create-namespace
 | kubearmorOperator.podSecurityContext | object | {} | pod security context |
 | kubearmorOperator.securityContext | object | {} | operator container security context |
 | kubearmorConfig | object | [values.yaml](values.yaml) | KubeArmor default configurations |
+| kubearmorOperator.annotateResource | bool | false | flag to control RBAC permissions conditionally, use `--annotateResource=<value>` arg as well to pass the same value to operator configuration |
 | autoDeploy | bool | false | Auto deploy KubeArmor with default configurations |
 
 The operator needs a `KubeArmorConfig` object in order to create resources related to KubeArmor. A default config is present in Helm `values.yaml` which can be overridden during Helm install. To install KubeArmor with default configuration use `--set autoDeploy=true` flag with helm install/upgrade command. It is possible to specify configuration even after KubeArmor resources have been installed by directly editing the created `KubeArmorConfig` CR.
@@ -60,6 +61,12 @@ spec:
 
     # default visibility configuration
     defaultVisibility: [comma separated: process|file|network] # DEFAULT - process,network
+
+    # enabling NRI
+    # Naming convention for kubearmor daemonset in case of NRI will be effective only when initally NRI is available & enabled. 
+    # In case snitch service account token is already present before its deployment, the naming convention won't show NRI, 
+    # it will be based on the runtime present. This happens because operator won't get KubearmorConfig event(initially).
+    enableNRI: [true|false] # DEFAULT - false
 
     # KubeArmor image and pull policy
     kubearmorImage:

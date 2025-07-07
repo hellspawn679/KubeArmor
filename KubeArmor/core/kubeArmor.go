@@ -18,6 +18,7 @@ import (
 	cfg "github.com/kubearmor/KubeArmor/KubeArmor/config"
 	kg "github.com/kubearmor/KubeArmor/KubeArmor/log"
 	"github.com/kubearmor/KubeArmor/KubeArmor/policy"
+	"github.com/kubearmor/KubeArmor/KubeArmor/presets"
 	"github.com/kubearmor/KubeArmor/KubeArmor/state"
 	tp "github.com/kubearmor/KubeArmor/KubeArmor/types"
 	"google.golang.org/grpc/health"
@@ -27,10 +28,9 @@ import (
 
 	efc "github.com/kubearmor/KubeArmor/KubeArmor/enforcer"
 	fd "github.com/kubearmor/KubeArmor/KubeArmor/feeder"
-	pb "github.com/kubearmor/KubeArmor/protobuf"
-
 	kvm "github.com/kubearmor/KubeArmor/KubeArmor/kvmAgent"
 	mon "github.com/kubearmor/KubeArmor/KubeArmor/monitor"
+	pb "github.com/kubearmor/KubeArmor/protobuf"
 )
 
 // ====================== //
@@ -93,6 +93,9 @@ type KubeArmorDaemon struct {
 
 	// runtime enforcer
 	RuntimeEnforcer *efc.RuntimeEnforcer
+
+	// presets
+	Presets *presets.Preset
 
 	// kvm agent
 	KVMAgent *kvm.KVMAgent
@@ -297,6 +300,25 @@ func (dm *KubeArmorDaemon) InitRuntimeEnforcer(pinpath string) bool {
 func (dm *KubeArmorDaemon) CloseRuntimeEnforcer() bool {
 	if err := dm.RuntimeEnforcer.DestroyRuntimeEnforcer(); err != nil {
 		dm.Logger.Errf("Failed to destory KubeArmor Enforcer (%s)", err.Error())
+		return false
+	}
+	return true
+}
+
+// ============= //
+// == Presets == //
+// ============= //
+
+// InitPresets Function
+func (dm *KubeArmorDaemon) InitPresets(logger *fd.Feeder, monitor *mon.SystemMonitor) bool {
+	dm.Presets = presets.NewPreset(dm.Logger, dm.SystemMonitor)
+	return dm.Presets != nil
+}
+
+// ClosePresets Function
+func (dm *KubeArmorDaemon) ClosePresets() bool {
+	if err := dm.Presets.Destroy(); err != nil {
+		dm.Logger.Errf("Failed to destroy preset (%s)", err.Error())
 		return false
 	}
 	return true
@@ -560,6 +582,13 @@ func KubeArmor() {
 				dm.Logger.Print("Started to protect a host and containers")
 			}
 		}
+
+		// initialize presets
+		if !dm.InitPresets(dm.Logger, dm.SystemMonitor) {
+			dm.Logger.Print("Disabled Presets since no presets are enabled")
+		} else {
+			dm.Logger.Print("Initialized Presets")
+		}
 	}
 
 	enableContainerPolicy := true
@@ -568,7 +597,6 @@ func KubeArmor() {
 
 	// Un-orchestrated workloads
 	if !dm.K8sEnabled && cfg.GlobalCfg.Policy {
-
 		// Check if cri socket set, if not then auto detect
 		if cfg.GlobalCfg.CRISocket == "" {
 			if kl.GetCRISocket("") == "" {
@@ -597,8 +625,14 @@ func KubeArmor() {
 				// monitor docker events
 				go dm.MonitorDockerEvents()
 			} else if strings.Contains(cfg.GlobalCfg.CRISocket, "containerd") {
-				// monitor containerd events
-				go dm.MonitorContainerdEvents()
+				// insuring NRI monitoring only in case containerd is present
+				if cfg.GlobalCfg.NRIEnabled && dm.checkNRIAvailability() {
+					// monitor NRI events
+					go dm.MonitorNRIEvents()
+				} else {
+					// monitor containerd events
+					go dm.MonitorContainerdEvents()
+				}
 			} else if strings.Contains(cfg.GlobalCfg.CRISocket, "cri-o") {
 				// monitor crio events
 				go dm.MonitorCrioEvents()
@@ -613,8 +647,10 @@ func KubeArmor() {
 	}
 
 	if dm.K8sEnabled && cfg.GlobalCfg.Policy {
-		// check if the CRI socket set while executing kubearmor exists
-		if cfg.GlobalCfg.CRISocket != "" {
+		if dm.checkNRIAvailability() {
+			// monitor NRI events
+			go dm.MonitorNRIEvents()
+		} else if cfg.GlobalCfg.CRISocket != "" { // check if the CRI socket set while executing kubearmor exists
 			trimmedSocket := strings.TrimPrefix(cfg.GlobalCfg.CRISocket, "unix://")
 			if _, err := os.Stat(trimmedSocket); err != nil {
 				dm.Logger.Warnf("Error while looking for CRI socket file: %s", err.Error())
@@ -862,4 +898,24 @@ func KubeArmor() {
 
 	// destroy the daemon
 	dm.DestroyKubeArmorDaemon()
+}
+
+func (dm *KubeArmorDaemon) checkNRIAvailability() bool {
+	// Check if nri socket is set, if not then auto detect
+	if cfg.GlobalCfg.NRISocket == "" {
+		if kl.GetNRISocket("") != "" {
+			cfg.GlobalCfg.NRISocket = kl.GetNRISocket("")
+		} else {
+			dm.Logger.Warnf("Error while looking for NRI socket file")
+			return false
+		}
+	} else {
+		// NRI socket supplied by user, check for existence
+		_, err := os.Stat(cfg.GlobalCfg.NRISocket)
+		if err != nil {
+			dm.Logger.Warnf("Error while looking for NRI socket file %s", err.Error())
+			return false
+		}
+	}
+	return true
 }

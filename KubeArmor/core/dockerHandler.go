@@ -14,7 +14,7 @@ import (
 	"strings"
 	"time"
 
-	"github.com/docker/docker/api/types"
+	"github.com/docker/docker/api/types/container"
 	"github.com/docker/docker/api/types/events"
 	"github.com/docker/docker/client"
 
@@ -215,12 +215,30 @@ func (dh *DockerHandler) GetContainerInfo(containerID string, OwnerInfo map[stri
 // ========================== //
 
 // GetEventChannel Function
-func (dh *DockerHandler) GetEventChannel() <-chan events.Message {
+func (dh *DockerHandler) GetEventChannel(ctx context.Context, StopChan <-chan struct{}) <-chan events.Message {
 	if dh.DockerClient != nil {
-		event, _ := dh.DockerClient.Events(context.Background(), types.EventsOptions{})
-		return event
-	}
+		eventBuffer := make(chan events.Message, 256)
 
+		go func() {
+
+			eventStream, _ := dh.DockerClient.Events(ctx, events.ListOptions{})
+			defer close(eventBuffer)
+
+			for event := range eventStream {
+				select {
+				case eventBuffer <- event:
+				case <-ctx.Done():
+					return
+				case <-StopChan:
+					return
+				default:
+					kg.Warnf("Docker channel full.")
+				}
+			}
+		}()
+
+		return eventBuffer
+	}
 	return nil
 }
 
@@ -263,11 +281,12 @@ func (dm *KubeArmorDaemon) GetAlreadyDeployedDockerContainers() {
 		var err error
 		Docker, err = NewDockerHandler()
 		if err != nil {
-			dm.Logger.Errf("Failed to create new Docker client: %s", err)
+			dm.Logger.Errf("Failed to create new Docker client: %s", err.Error())
+			return
 		}
 	}
 
-	if containerList, err := Docker.DockerClient.ContainerList(context.Background(), types.ContainerListOptions{}); err == nil {
+	if containerList, err := Docker.DockerClient.ContainerList(context.Background(), container.ListOptions{}); err == nil {
 		for _, dcontainer := range containerList {
 			// get container information from docker client
 			container, err := Docker.GetContainerInfo(dcontainer.ID, dm.OwnerInfo)
@@ -333,7 +352,12 @@ func (dm *KubeArmorDaemon) GetAlreadyDeployedDockerContainers() {
 
 							dm.SecurityPoliciesLock.RLock()
 							for _, secPol := range dm.SecurityPolicies {
-								if kl.MatchIdentities(secPol.Spec.Selector.Identities, endPoint.Identities) {
+								// required only in ADDED event, this alone will update the namespaceList for csp
+								updateNamespaceListforCSP(&secPol)
+
+								// match ksp || csp
+								if (kl.MatchIdentities(secPol.Spec.Selector.Identities, endPoint.Identities) && kl.MatchExpIdentities(secPol.Spec.Selector, endPoint.Identities)) ||
+									(kl.ContainsElement(secPol.Spec.Selector.NamespaceList, endPoint.NamespaceName) && kl.MatchExpIdentities(secPol.Spec.Selector, endPoint.Identities)) {
 									endPoint.SecurityPolicies = append(endPoint.SecurityPolicies, secPol)
 								}
 							}
@@ -352,7 +376,9 @@ func (dm *KubeArmorDaemon) GetAlreadyDeployedDockerContainers() {
 							endPoint.SecurityPolicies = []tp.SecurityPolicy{}
 							dm.SecurityPoliciesLock.RLock()
 							for _, secPol := range dm.SecurityPolicies {
-								if kl.MatchIdentities(secPol.Spec.Selector.Identities, endPoint.Identities) {
+								// match ksp || csp
+								if (kl.MatchIdentities(secPol.Spec.Selector.Identities, endPoint.Identities) && kl.MatchExpIdentities(secPol.Spec.Selector, endPoint.Identities)) ||
+									(kl.ContainsElement(secPol.Spec.Selector.NamespaceList, endPoint.NamespaceName) && kl.MatchExpIdentities(secPol.Spec.Selector, endPoint.Identities)) {
 									endPoint.SecurityPolicies = append(endPoint.SecurityPolicies, secPol)
 								}
 							}
@@ -431,12 +457,19 @@ func (dm *KubeArmorDaemon) GetAlreadyDeployedDockerContainers() {
 					// update NsMap
 					dm.SystemMonitor.AddContainerIDToNsMap(container.ContainerID, container.NamespaceName, container.PidNS, container.MntNS)
 					dm.RuntimeEnforcer.RegisterContainer(container.ContainerID, container.PidNS, container.MntNS)
+					if dm.Presets != nil {
+						dm.Presets.RegisterContainer(container.ContainerID, container.PidNS, container.MntNS)
+					}
 
 					if len(endPoint.SecurityPolicies) > 0 { // struct can be empty or no policies registered for the endpoint yet
 						dm.Logger.UpdateSecurityPolicies("ADDED", endPoint)
 						if dm.RuntimeEnforcer != nil && endPoint.PolicyEnabled == tp.KubeArmorPolicyEnabled {
 							// enforce security policies
 							dm.RuntimeEnforcer.UpdateSecurityPolicies(endPoint)
+						}
+						if dm.Presets != nil && endPoint.PolicyEnabled == tp.KubeArmorPolicyEnabled {
+							// enforce preset rules
+							dm.Presets.UpdateSecurityPolicies(endPoint)
 						}
 					}
 				}
@@ -524,7 +557,11 @@ func (dm *KubeArmorDaemon) UpdateDockerContainer(containerID, action string) {
 
 					dm.SecurityPoliciesLock.RLock()
 					for _, secPol := range dm.SecurityPolicies {
-						if kl.MatchIdentities(secPol.Spec.Selector.Identities, endPoint.Identities) {
+						updateNamespaceListforCSP(&secPol)
+
+						// match ksp || csp
+						if (kl.MatchIdentities(secPol.Spec.Selector.Identities, endPoint.Identities) && kl.MatchExpIdentities(secPol.Spec.Selector, endPoint.Identities)) ||
+							(kl.ContainsElement(secPol.Spec.Selector.NamespaceList, endPoint.NamespaceName) && kl.MatchExpIdentities(secPol.Spec.Selector, endPoint.Identities)) {
 							endPoint.SecurityPolicies = append(endPoint.SecurityPolicies, secPol)
 						}
 					}
@@ -543,7 +580,9 @@ func (dm *KubeArmorDaemon) UpdateDockerContainer(containerID, action string) {
 					endPoint.SecurityPolicies = []tp.SecurityPolicy{}
 					dm.SecurityPoliciesLock.RLock()
 					for _, secPol := range dm.SecurityPolicies {
-						if kl.MatchIdentities(secPol.Spec.Selector.Identities, endPoint.Identities) {
+						// match ksp || csp
+						if (kl.MatchIdentities(secPol.Spec.Selector.Identities, endPoint.Identities) && kl.MatchExpIdentities(secPol.Spec.Selector, endPoint.Identities)) ||
+							(kl.ContainsElement(secPol.Spec.Selector.NamespaceList, endPoint.NamespaceName) && kl.MatchExpIdentities(secPol.Spec.Selector, endPoint.Identities)) {
 							endPoint.SecurityPolicies = append(endPoint.SecurityPolicies, secPol)
 						}
 					}
@@ -616,12 +655,20 @@ func (dm *KubeArmorDaemon) UpdateDockerContainer(containerID, action string) {
 			// update NsMap
 			dm.SystemMonitor.AddContainerIDToNsMap(containerID, container.NamespaceName, container.PidNS, container.MntNS)
 			dm.RuntimeEnforcer.RegisterContainer(containerID, container.PidNS, container.MntNS)
+			if dm.Presets != nil {
+				dm.Presets.RegisterContainer(containerID, container.PidNS, container.MntNS)
+			}
 
 			if len(endPoint.SecurityPolicies) > 0 { // struct can be empty or no policies registered for the endpoint yet
 				dm.Logger.UpdateSecurityPolicies("ADDED", endPoint)
 				if dm.RuntimeEnforcer != nil && endPoint.PolicyEnabled == tp.KubeArmorPolicyEnabled {
 					// enforce security policies
 					dm.RuntimeEnforcer.UpdateSecurityPolicies(endPoint)
+				}
+
+				if dm.Presets != nil && endPoint.PolicyEnabled == tp.KubeArmorPolicyEnabled {
+					// enforce preset rules
+					dm.Presets.UpdateSecurityPolicies(endPoint)
 				}
 			}
 		}
@@ -700,6 +747,9 @@ func (dm *KubeArmorDaemon) UpdateDockerContainer(containerID, action string) {
 			// update NsMap
 			dm.SystemMonitor.DeleteContainerIDFromNsMap(containerID, container.NamespaceName, container.PidNS, container.MntNS)
 			dm.RuntimeEnforcer.UnregisterContainer(containerID)
+			if dm.Presets != nil {
+				dm.Presets.UnregisterContainer(containerID)
+			}
 		}
 
 		dm.Logger.Printf("Detected a container (removed/%.12s)", containerID)
@@ -728,13 +778,17 @@ func (dm *KubeArmorDaemon) MonitorDockerEvents() {
 		var err error
 		Docker, err = NewDockerHandler()
 		if err != nil {
-			dm.Logger.Errf("Failed to create new Docker client: %s", err)
+			dm.Logger.Errf("Failed to create new Docker client: %s", err.Error())
+			return
 		}
 	}
 
 	dm.Logger.Print("Started to monitor Docker events")
 
-	EventChan := Docker.GetEventChannel()
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	EventChan := Docker.GetEventChannel(ctx, StopChan)
 
 	for {
 		select {

@@ -9,6 +9,7 @@ import (
 	"encoding/hex"
 	"os"
 	"strings"
+	"sync"
 
 	deployments "github.com/kubearmor/KubeArmor/deployments/get"
 	securityv1 "github.com/kubearmor/KubeArmor/pkg/KubeArmorController/api/security.kubearmor.com/v1"
@@ -46,6 +47,7 @@ var (
 	EnforcerLabel   string = "kubearmor.io/enforcer"
 	RuntimeLabel    string = "kubearmor.io/runtime"
 	SocketLabel     string = "kubearmor.io/socket"
+	NRISocketLabel  string = "kubearmor.io/nri-socket"
 	RandLabel       string = "kubearmor.io/rand"
 	OsLabel         string = "kubernetes.io/os"
 	ArchLabel       string = "kubernetes.io/arch"
@@ -85,7 +87,10 @@ var (
 	ConfigAlertThrottling            string = "alertThrottling"
 	ConfigMaxAlertPerSec             string = "maxAlertPerSec"
 	ConfigThrottleSec                string = "throttleSec"
+	ConfigEnableNRI                  string = "enableNRI"
 
+	GlobalImagePullSecrets []corev1.LocalObjectReference = []corev1.LocalObjectReference{}
+	GlobalTolerations      []corev1.Toleration           = []corev1.Toleration{}
 	//KubearmorRelayEnvVariables
 
 	EnableStdOutAlerts string = "enableStdOutAlerts"
@@ -93,20 +98,47 @@ var (
 	EnableStdOutMsgs   string = "enableStdOutMsgs"
 
 	// Images
-	KubeArmorName                      string = "kubearmor"
-	KubeArmorImage                     string = "kubearmor/kubearmor:stable"
-	KubeArmorImagePullPolicy           string = "Always"
-	KubeArmorInitName                  string = "kubearmor-init"
-	KubeArmorInitImage                 string = "kubearmor/kubearmor-init:stable"
-	KubeArmorInitImagePullPolicy       string = "Always"
-	KubeArmorRelayName                 string = "kubearmor-relay"
-	KubeArmorRelayImage                string = "kubearmor/kubearmor-relay-server:latest"
-	KubeArmorRelayImagePullPolicy      string = "Always"
-	KubeArmorControllerName            string = "kubearmor-controller"
-	KubeArmorControllerImage           string = "kubearmor/kubearmor-controller:latest"
-	KubeArmorControllerImagePullPolicy string = "Always"
-	SeccompProfile                            = "kubearmor-seccomp.json"
-	SeccompInitProfile                        = "kubearmor-init-seccomp.json"
+	KubeArmorName string   = "kubearmor"
+	KubeArmorArgs []string = []string{
+		"-gRPC=32767",
+		"-procfsMount=/host/procfs",
+		"-tlsEnabled=false",
+	}
+	KubeArmorImage            string                        = "kubearmor/kubearmor:stable"
+	KubeArmorImagePullPolicy  string                        = "Always"
+	KubeArmorImagePullSecrets []corev1.LocalObjectReference = []corev1.LocalObjectReference{}
+	KubeArmorTolerations      []corev1.Toleration           = []corev1.Toleration{}
+
+	KubeArmorInitName             string                        = "kubearmor-init"
+	KubeArmorInitArgs             []string                      = []string{}
+	KubeArmorInitImage            string                        = "kubearmor/kubearmor-init:stable"
+	KubeArmorInitImagePullPolicy  string                        = "Always"
+	KubeArmorInitImagePullSecrets []corev1.LocalObjectReference = []corev1.LocalObjectReference{}
+	KubeArmorInitTolerations      []corev1.Toleration           = []corev1.Toleration{}
+
+	KubeArmorRelayName string   = "kubearmor-relay"
+	KubeArmorRelayArgs []string = []string{
+		"-tlsEnabled=false",
+	}
+	KubeArmorRelayImage            string                        = "kubearmor/kubearmor-relay-server:latest"
+	KubeArmorRelayImagePullPolicy  string                        = "Always"
+	KubeArmorRelayImagePullSecrets []corev1.LocalObjectReference = []corev1.LocalObjectReference{}
+	KubeArmorRelayTolerations      []corev1.Toleration           = []corev1.Toleration{}
+
+	KubeArmorControllerName string   = "kubearmor-controller"
+	KubeArmorControllerArgs []string = []string{
+		"--leader-elect",
+		"--health-probe-bind-address=:8081",
+		"--annotateExisting=false",
+	}
+	KubeArmorControllerImage              string                        = "kubearmor/kubearmor-controller:latest"
+	KubeArmorControllerImagePullPolicy    string                        = "Always"
+	KubeArmorControllerImagePullSecrets   []corev1.LocalObjectReference = []corev1.LocalObjectReference{}
+	KubeArmorControllerTolerations        []corev1.Toleration           = []corev1.Toleration{}
+	KubeArmorControllerWebhookServiceName                               = "kubearmor-controller-webhook-service"
+
+	SeccompProfile     = "kubearmor-seccomp.json"
+	SeccompInitProfile = "kubearmor-init-seccomp.json"
 
 	// tls
 	EnableTls                      bool     = false
@@ -125,7 +157,7 @@ var (
 
 	// recommend policies
 	RecommendedPolicies opv1.RecommendedPolicies = opv1.RecommendedPolicies{
-		MatchExpressions: []securityv1.MatchExpressionsType{
+		MatchExpressions: []securityv1.ClusterMatchExpressionsType{
 			{
 				Key:      "namespace",
 				Operator: "NotIn",
@@ -154,6 +186,9 @@ var (
 	}
 
 	ElasticSearchAdapterCaCertPath = "/cert"
+
+	ControllerPortLock      sync.Mutex
+	KubeArmorControllerPort = 9443
 )
 var Pointer2True bool = true
 
@@ -197,7 +232,13 @@ var ContainerRuntimeSocketMap = map[string][]string{
 		"/var/run/crio/crio.sock",
 		"/run/crio/crio.sock",
 	},
+	"nri": {
+		"/var/run/nri/nri.sock",
+		"/run/nri/nri.sock",
+	},
 }
+
+var NRIEnabled = false
 
 var HostPathDirectory = corev1.HostPathDirectory
 var HostPathDirectoryOrCreate = corev1.HostPathDirectoryOrCreate
@@ -231,6 +272,7 @@ var RuntimeSocketLocation = map[string]string{
 	"docker":     "/var/run/docker.sock",
 	"containerd": "/var/run/containerd/containerd.sock",
 	"cri-o":      "/var/run/crio/crio.sock",
+	"nri":        "/var/run/nri/nri.sock",
 }
 
 func ShortSHA(s string) string {
@@ -557,4 +599,42 @@ func AddOrRemoveVolume(src *[]corev1.Volume, dest *[]corev1.Volume, action strin
 	if action == AddAction {
 		*dest = append(*dest, *src...)
 	}
+}
+
+func ParseArgument(arg string) (key string, value string, found bool) {
+	arg = strings.TrimLeft(arg, "-")
+
+	parts := strings.SplitN(arg, "=", 2)
+	if len(parts) != 2 {
+		return "", "", false
+	}
+
+	return parts[0], parts[1], true
+}
+
+func GenerateNRIvol(nriSocket string) (vol []corev1.Volume, volMnt []corev1.VolumeMount) {
+	if nriSocket != "" {
+		for _, socket := range ContainerRuntimeSocketMap["nri"] {
+			if strings.ReplaceAll(socket[1:], "/", "_") == nriSocket {
+				vol = append(vol, corev1.Volume{
+					Name: "nri-socket",
+					VolumeSource: corev1.VolumeSource{
+						HostPath: &corev1.HostPathVolumeSource{
+							Path: socket,
+							Type: &HostPathSocket,
+						},
+					},
+				})
+
+				socket = RuntimeSocketLocation["nri"]
+				volMnt = append(volMnt, corev1.VolumeMount{
+					Name:      "nri-socket",
+					MountPath: socket,
+					ReadOnly:  true,
+				})
+				break
+			}
+		}
+	}
+	return
 }

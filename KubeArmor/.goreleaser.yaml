@@ -10,6 +10,11 @@ builds:
       - arm64
     env:
       - CGO_ENABLED=0
+    ldflags:
+      - "-X main.BuildDate={{.Date}}"
+      - "-X main.GitCommit={{.Commit}}"
+      - "-X main.GitBranch={{.Branch}}"
+      - "-X main.GitSummary={{.Summary}}"
 
 release:
   replace_existing_artifacts: true
@@ -44,8 +49,6 @@ archives:
       - src: ./packaging/kubearmor.service
         dst: /usr/lib/systemd/system/
         strip_parent: true
-      - src: ./karmor
-        dst: /usr/local/bin/karmor
 
 nfpms:
   - id: "kubearmor"
@@ -80,8 +83,6 @@ nfpms:
       - src: /opt/kubearmor/kubearmor
         dst: /usr/local/bin/kubearmor
         type: symlink
-      - src: ./karmor
-        dst: /usr/local/bin/karmor
     scripts:
       postinstall: packaging/post-install.sh
     overrides:

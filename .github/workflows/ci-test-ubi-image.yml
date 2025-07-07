@@ -54,6 +54,8 @@ jobs:
           filters: |
             controller:
               - 'pkg/KubeArmorController/**'
+            multiubuntu:
+              - 'examples/multiubuntu/build/**'
  
       - name: Install the latest LLVM toolchain
         run: ./.github/workflows/install-llvm.sh
@@ -72,12 +74,18 @@ jobs:
         working-directory: pkg/KubeArmorOperator
         run: |
           make docker-build
-      
+
+      - name: Build multiubuntu docker image
+        working-directory: examples/multiubuntu/build
+        if: steps.filter.outputs.multiubuntu == 'true'
+        run: docker build -t kubearmor/ubuntu-w-utils:latest .
+
       - name: Build KubeArmorController
         if: steps.filter.outputs.controller == 'true'
         run: make -C pkg/KubeArmorController/ docker-build TAG=latest
 
       - name: Run KubeArmor
+        timeout-minutes: 7
         run: |
           docker save kubearmor/kubearmor-init:latest | sudo podman load
           docker save kubearmor/kubearmor-ubi:latest | sudo podman load
@@ -86,6 +94,9 @@ jobs:
           
           if [ ${{ steps.filter.outputs.controller }} == 'true' ]; then 
             docker save kubearmor/kubearmor-controller:latest | sudo podman load
+          fi
+          if [[ ${{ steps.filter.outputs.multiubuntu }} == 'true' ]]; then
+            docker save kubearmor/ubuntu-w-utils:latest | sudo podman load
           fi          
           
           helm upgrade --install kubearmor-operator ./deployments/helm/KubeArmorOperator -n kubearmor --create-namespace --set kubearmorOperator.image.tag=latest
@@ -101,13 +112,23 @@ jobs:
           fi
 
           kubectl wait -n kubearmor --timeout=5m --for=jsonpath='{.status.phase}'=Running kubearmorconfigs/kubearmorconfig-test
-          kubectl wait --timeout=7m --for=condition=ready pod -l kubearmor-app,kubearmor-app!=kubearmor-snitch,kubearmor-app!=kubearmor-controller -n kubearmor
-          kubectl wait --timeout=1m --for=condition=ready pod -l kubearmor-app=kubearmor-controller -n kubearmor
-          kubectl get pods -A
+          
+          while [ ! "$(kubectl wait --timeout=5s --for=condition=ready pod -l kubearmor-app,kubearmor-app!=kubearmor-snitch -n kubearmor >/dev/null 2>&1; echo $?)" -eq 0 ]; do
+            kubectl rollout status --timeout=5m deployment -n kubearmor -l kubearmor-app,kubearmor-app!=kubearmor-controller -n kubearmor
+            kubectl rollout status --timeout=5m daemonset -l kubearmor-app=kubearmor -n kubearmor
+            kubectl rollout status --timeout=5m deployment -n kubearmor -l kubearmor-app=kubearmor-controller -n kubearmor
+            kubectl get pods -A
+          done
       
       - name: Operator may take upto 10 sec to enable TLS, Sleep for 15Sec
         run: |
           sleep 15
+
+      - name: make changes in multiubuntu-deployment
+        working-directory: ./tests/k8s_env
+        if: steps.filter.outputs.multiubuntu == 'true'
+        run: |
+          grep -rl "kubearmor/ubuntu-w-utils:latest" ./ | while read -r file; do sed -i 's/imagePullPolicy: Always/imagePullPolicy: Never/g' "$file"; done
       
       - name: Test KubeArmor using Ginkgo
         run: |
@@ -125,7 +146,7 @@ jobs:
 
       - name: Archive log artifacts
         if: ${{ failure() }}
-        uses: actions/upload-artifact@v3
+        uses: actions/upload-artifact@v4
         with:
           name: kubearmor.logs
           path: |
